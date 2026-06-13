@@ -62,6 +62,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       },
       createStore<Tab[]>([]),
     )
+    const [panelStore, setPanelStore] = persisted(Persist.global("tabs.panels"), createStore({ tiled: false }))
 
     const params = useParams()
     const navigate = useNavigate()
@@ -211,6 +212,16 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       },
     }
 
-    return { ...actions, store, ready }
+    const panels = {
+      tiled: () => panelStore.tiled,
+      setTiled(value: boolean) {
+        setPanelStore("tiled", value)
+      },
+      toggle() {
+        setPanelStore("tiled", (value) => !value)
+      },
+    }
+
+    return { ...actions, panels, store, ready }
   },
 })

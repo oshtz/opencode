@@ -14,6 +14,7 @@ import {
   onMount,
   untrack,
   createResource,
+  For,
 } from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -30,7 +31,7 @@ import { previewSelectedLines } from "@opencode-ai/ui/pierre/selection-bridge"
 import { Button } from "@opencode-ai/ui/button"
 import { showToast } from "@/utils/toast"
 import { checksum } from "@opencode-ai/core/util/encode"
-import { useLocation, useSearchParams } from "@solidjs/router"
+import { useLocation, useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
@@ -63,6 +64,18 @@ import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
+import {
+  normalizePanelState,
+  normalizePanelWeights,
+  panelAvailableSize,
+  panelBoundary,
+  panelHandleOffset,
+  panelMinHeight,
+  panelMinWidth,
+  panelPixels,
+  panelTrackTemplate,
+  resizePanelWeights,
+} from "@/pages/session/panel-layout"
 import { Identifier } from "@/utils/id"
 import { diffs as list } from "@/utils/diffs"
 import { Persist, persisted } from "@/utils/persist"
@@ -70,6 +83,8 @@ import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
+import { tabHref, useTabs as useOpenTabs, type SessionTab } from "@/context/tabs"
+import { SessionTextPane } from "@/pages/session/session-text-pane"
 
 const emptyUserMessages: UserMessage[] = []
 type FollowupItem = FollowupDraft & { id: string }
@@ -200,10 +215,21 @@ export default function Page() {
   const comments = useComments()
   const terminal = useTerminal()
   const server = useServer()
+  const navigate = useNavigate()
+  const openTabs = useOpenTabs()
   const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string }>()
   const location = useLocation()
   const { params, sessionKey, workspaceKey, tabs, view } = useSessionLayout()
   const newSessionDesign = createMemo(() => settings.general.newLayoutDesigns())
+  const panelTabs = createMemo(() =>
+    openTabs.store.filter((tab): tab is SessionTab => tab.type === "session" && tab.server === server.key),
+  )
+  const focusedPanel = (tab: SessionTab) => tab.dirBase64 === params.dir && tab.sessionId === params.id
+  const panelMode = createMemo(() => newSessionDesign() && openTabs.panels.tiled() && !!params.id && panelTabs().length > 1)
+  const focusPanel = (tab: SessionTab) => {
+    if (focusedPanel(tab)) return
+    navigate(tabHref(tab))
+  }
 
   createEffect(() => {
     if (!prompt.ready()) return
@@ -394,7 +420,60 @@ export default function Page() {
     changes: "git" as ChangeMode,
     newSessionWorktree: "main",
     deferRender: false,
+    panel: {
+      width: 0,
+      height: 0,
+      columns: [] as number[],
+      rows: [] as number[],
+    },
   })
+
+  const panelState = () => normalizePanelState(store.panel)
+  const panelColumnCount = createMemo(() => Math.max(1, isDesktop() ? Math.min(2, panelTabs().length) : 1))
+  const panelRowCount = createMemo(() => Math.max(1, Math.ceil(panelTabs().length / panelColumnCount())))
+  const panelColumnWeights = createMemo(() => normalizePanelWeights(panelState().columns, panelColumnCount()))
+  const panelRowWeights = createMemo(() => normalizePanelWeights(panelState().rows, panelRowCount()))
+  const panelAvailableWidth = createMemo(() => panelAvailableSize(panelState().width, panelColumnCount()))
+  const panelAvailableHeight = createMemo(() => panelAvailableSize(panelState().height, panelRowCount()))
+  const panelColumnPixels = createMemo(() => panelPixels(panelColumnWeights(), panelAvailableWidth()))
+  const panelRowPixels = createMemo(() => panelPixels(panelRowWeights(), panelAvailableHeight()))
+  const panelColumnHandles = createMemo(() =>
+    Array.from({ length: Math.max(0, panelColumnCount() - 1) }, (_, index) => index),
+  )
+  const panelRowHandles = createMemo(() =>
+    Array.from({ length: Math.max(0, panelRowCount() - 1) }, (_, index) => index),
+  )
+  const panelGridStyle = createMemo(() => ({
+    "grid-template-columns": panelTrackTemplate(panelColumnWeights()),
+    "grid-template-rows": panelTrackTemplate(panelRowWeights()),
+  }))
+
+  let panelGrid: HTMLDivElement | undefined
+
+  createResizeObserver(
+    () => panelGrid,
+    ({ width, height }) => {
+      const nextWidth = Math.round(width)
+      const nextHeight = Math.round(height)
+
+      if (panelState().width === nextWidth && panelState().height === nextHeight) return
+      setStore("panel", { ...panelState(), width: nextWidth, height: nextHeight })
+    },
+  )
+
+  function resizePanelColumn(index: number, boundary: number) {
+    const available = panelAvailableWidth()
+    if (available <= 0) return
+    const min = Math.min(panelMinWidth, available / panelColumnCount())
+    setStore("panel", { ...panelState(), columns: resizePanelWeights(panelColumnPixels(), index, boundary, min) })
+  }
+
+  function resizePanelRow(index: number, boundary: number) {
+    const available = panelAvailableHeight()
+    if (available <= 0) return
+    const min = Math.min(panelMinHeight, available / panelRowCount())
+    setStore("panel", { ...panelState(), rows: resizePanelWeights(panelRowPixels(), index, boundary, min) })
+  }
 
   const [followup, setFollowup] = persisted(
     Persist.serverWorkspace(serverSDK.scope, sdk.directory, "followup", ["followup.v1"]),
@@ -1715,7 +1794,145 @@ export default function Page() {
     />
   )
 
-  return (
+  const sessionContent = () => (
+    <Switch>
+      <Match when={params.id && mobileChanges()}>
+        <div class="relative h-full overflow-hidden">
+          {reviewContent({
+            diffStyle: "unified",
+            classes: {
+              root: "pb-8",
+              header: "px-4",
+              container: "px-4",
+            },
+            loadingClass: "px-4 py-4 text-text-weak",
+            emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
+          })}
+        </div>
+      </Match>
+      <Match when={params.id}>
+        <Show when={messagesReady()}>
+          <MessageTimeline
+            actions={actions}
+            scroll={ui.scroll}
+            onResumeScroll={resumeScroll}
+            setScrollRef={setScrollRef}
+            onScheduleScrollState={scheduleScrollState}
+            onAutoScrollHandleScroll={autoScroll.handleScroll}
+            onMarkScrollGesture={markScrollGesture}
+            hasScrollGesture={hasScrollGesture}
+            onUserScroll={markUserScroll}
+            onHistoryScroll={historyLoader.onScrollerScroll}
+            onAutoScrollInteraction={autoScroll.handleInteraction}
+            shouldAnchorBottom={() =>
+              !location.hash && !store.messageId && !ui.pendingMessage && !autoScroll.userScrolled()
+            }
+            centered={centered()}
+            setContentRef={(el) => {
+              content = el
+              autoScroll.contentRef(el)
+
+              const root = scroller
+              if (root) scheduleScrollState(root)
+            }}
+            historyShift={historyLoader.shift()}
+            userMessages={historyLoader.userMessages()}
+            anchor={anchor}
+            setRevealMessage={(fn) => {
+              revealMessage = fn
+            }}
+          />
+        </Show>
+      </Match>
+      <Match when={true}>
+        <NewSessionView worktree={newSessionWorktree()} />
+      </Match>
+    </Switch>
+  )
+
+  const panelView = () => (
+    <div class="relative size-full overflow-hidden flex flex-col bg-v2-background-bg-deep">
+      {sessionSync() ?? ""}
+      <div class="flex-1 min-h-0 overflow-hidden p-2">
+        <div
+          data-session-panel-grid
+          class="relative size-full min-h-0 overflow-hidden"
+          ref={(el) => {
+            panelGrid = el
+          }}
+        >
+          <div class="size-full min-h-0 grid gap-2 overflow-hidden" style={panelGridStyle()}>
+            <For each={panelTabs()}>
+              {(tab) => {
+                const active = () => focusedPanel(tab)
+                return (
+                  <section
+                    data-session-panel
+                    data-active={active()}
+                    role={active() ? undefined : "button"}
+                    tabIndex={active() ? undefined : 0}
+                    class="min-h-0 min-w-0 max-w-full overflow-hidden rounded-[10px] border border-v2-border-border-base bg-v2-background-bg-layer-01 shadow-[var(--v2-elevation-raised)] outline-none transition-opacity focus-visible:border-v2-border-border-focus data-[active='false']:cursor-pointer data-[active='false']:opacity-70 data-[active='false']:hover:opacity-85"
+                    onClick={() => {
+                      if (!active()) focusPanel(tab)
+                    }}
+                    onKeyDown={(event) => {
+                      if (active()) return
+                      if (event.key !== "Enter" && event.key !== " ") return
+                      event.preventDefault()
+                      focusPanel(tab)
+                    }}
+                  >
+                    <Show when={active()} fallback={<SessionTextPane tab={tab} centered={centered()} />}>
+                      <div class="size-full min-w-0 max-w-full overflow-x-hidden">{sessionContent()}</div>
+                    </Show>
+                  </section>
+                )
+              }}
+            </For>
+          </div>
+
+          <Show when={panelState().width > 0 && panelState().height > 0}>
+            <For each={panelColumnHandles()}>
+              {(index) => {
+                const min = () => Math.min(panelMinWidth, panelAvailableWidth() / panelColumnCount())
+                return (
+                  <ResizeHandle
+                    direction="horizontal"
+                    size={panelBoundary(panelColumnPixels(), index)}
+                    min={min() * (index + 1)}
+                    max={panelAvailableWidth() - min() * (panelColumnCount() - index - 1)}
+                    onResize={(size) => resizePanelColumn(index, size)}
+                    class="absolute top-0 bottom-0 z-30 w-3 -translate-x-1/2 cursor-col-resize [app-region:no-drag] after:absolute after:inset-y-4 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-v2-border-border-focus after:opacity-0 after:transition-opacity hover:after:opacity-100"
+                    style={{ left: `${panelHandleOffset(panelColumnPixels(), index)}px` }}
+                  />
+                )
+              }}
+            </For>
+            <For each={panelRowHandles()}>
+              {(index) => {
+                const min = () => Math.min(panelMinHeight, panelAvailableHeight() / panelRowCount())
+                return (
+                  <ResizeHandle
+                    direction="vertical"
+                    edge="end"
+                    size={panelBoundary(panelRowPixels(), index)}
+                    min={min() * (index + 1)}
+                    max={panelAvailableHeight() - min() * (panelRowCount() - index - 1)}
+                    onResize={(size) => resizePanelRow(index, size)}
+                    class="absolute left-0 right-0 z-30 h-3 -translate-y-1/2 cursor-row-resize [app-region:no-drag] after:absolute after:top-1/2 after:inset-x-4 after:h-px after:-translate-y-1/2 after:bg-v2-border-border-focus after:opacity-0 after:transition-opacity hover:after:opacity-100"
+                    style={{ top: `${panelHandleOffset(panelRowPixels(), index)}px` }}
+                  />
+                )
+              }}
+            </For>
+          </Show>
+        </div>
+      </div>
+      {composerRegion("dock")}
+    </div>
+  )
+
+  const standardView = () => (
     <div class="relative size-full overflow-hidden flex flex-col">
       {sessionSync() ?? ""}
       <SessionHeader />
@@ -1767,61 +1984,7 @@ export default function Page() {
               "shadow-[var(--v2-elevation-raised)]": settings.general.newLayoutDesigns() && !!params.id,
             }}
           >
-            <div class="flex-1 min-h-0 overflow-hidden">
-              <Switch>
-                <Match when={params.id && mobileChanges()}>
-                  <div class="relative h-full overflow-hidden">
-                    {reviewContent({
-                      diffStyle: "unified",
-                      classes: {
-                        root: "pb-8",
-                        header: "px-4",
-                        container: "px-4",
-                      },
-                      loadingClass: "px-4 py-4 text-text-weak",
-                      emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
-                    })}
-                  </div>
-                </Match>
-                <Match when={params.id}>
-                  <Show when={messagesReady()}>
-                    <MessageTimeline
-                      actions={actions}
-                      scroll={ui.scroll}
-                      onResumeScroll={resumeScroll}
-                      setScrollRef={setScrollRef}
-                      onScheduleScrollState={scheduleScrollState}
-                      onAutoScrollHandleScroll={autoScroll.handleScroll}
-                      onMarkScrollGesture={markScrollGesture}
-                      hasScrollGesture={hasScrollGesture}
-                      onUserScroll={markUserScroll}
-                      onHistoryScroll={historyLoader.onScrollerScroll}
-                      onAutoScrollInteraction={autoScroll.handleInteraction}
-                      shouldAnchorBottom={() =>
-                        !location.hash && !store.messageId && !ui.pendingMessage && !autoScroll.userScrolled()
-                      }
-                      centered={centered()}
-                      setContentRef={(el) => {
-                        content = el
-                        autoScroll.contentRef(el)
-
-                        const root = scroller
-                        if (root) scheduleScrollState(root)
-                      }}
-                      historyShift={historyLoader.shift()}
-                      userMessages={historyLoader.userMessages()}
-                      anchor={anchor}
-                      setRevealMessage={(fn) => {
-                        revealMessage = fn
-                      }}
-                    />
-                  </Show>
-                </Match>
-                <Match when={true}>
-                  <NewSessionView worktree={newSessionWorktree()} />
-                </Match>
-              </Switch>
-            </div>
+            <div class="flex-1 min-h-0 overflow-hidden">{sessionContent()}</div>
 
             <Show when={params.id || !newSessionDesign()}>{composerRegion("dock")}</Show>
           </div>
@@ -1862,5 +2025,14 @@ export default function Page() {
 
       <TerminalPanel />
     </div>
+  )
+
+  return (
+    <Show
+      when={panelMode()}
+      fallback={standardView()}
+    >
+      {panelView()}
+    </Show>
   )
 }
