@@ -277,6 +277,7 @@ export function MessageTimeline(props: {
   onAutoScrollInteraction: (event: MouseEvent) => void
   shouldAnchorBottom: () => boolean
   centered: boolean
+  fullWidthHeader?: boolean
   setContentRef: (el: HTMLDivElement) => void
   historyShift: boolean
   userMessages: UserMessage[]
@@ -1305,8 +1306,8 @@ export function MessageTimeline(props: {
               "sticky top-0 z-30 bg-[linear-gradient(to_bottom,var(--background-stronger)_48px,transparent)]": true,
               "w-full": true,
               "pb-4": true,
-              "pl-2 pr-3 md:pl-4 md:pr-3": true,
-              "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered,
+              "pl-2 pr-3 md:pl-4 md:pr-3": !props.fullWidthHeader,
+              "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered && !props.fullWidthHeader,
             }}
           >
             <Show when={workingStatus() !== "hidden" && settings.general.showSessionProgressBar()}>
@@ -1320,7 +1321,13 @@ export function MessageTimeline(props: {
                 />
               </div>
             </Show>
-            <div class="h-12 w-full flex items-center justify-between gap-2">
+            <div
+              classList={{
+                "h-12 w-full flex items-center justify-between gap-2": true,
+                "pl-2 pr-3 md:pl-4 md:pr-3": !!props.fullWidthHeader,
+                "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered && !!props.fullWidthHeader,
+              }}
+            >
               <div class="flex items-center gap-1 min-w-0 flex-1 pr-3">
                 <div class="flex items-center min-w-0 grow-1">
                   <Show when={parentID()}>

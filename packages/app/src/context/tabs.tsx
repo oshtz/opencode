@@ -9,6 +9,7 @@ import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { usePlatform } from "./platform"
 import { uuid } from "@/utils/uuid"
 import { SessionTabsRemovedDetail } from "@/components/titlebar-session-events"
+import { swapTabOrder, tabOrderKey } from "./tabs-order"
 
 export type SessionTab = {
   type: "session"
@@ -32,7 +33,7 @@ export const draftHref = (draftID: string) => `/new-session?draftId=${encodeURIC
 export const tabHref = (tab: Tab) =>
   tab.type === "draft" ? draftHref(tab.draftID) : `/${tab.dirBase64}/session/${tab.sessionId}`
 
-export const tabKey = (tab: Tab) => (tab.type === "draft" ? `draft:${tab.draftID}` : `${tab.server}\n${tabHref(tab)}`)
+export const tabKey = tabOrderKey
 
 export function sessionHasOpenTab(tabs: Tab[], server: ServerConnection.Key, session: Session) {
   const dirBase64 = base64Encode(session.directory)
@@ -158,6 +159,9 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
           else navigate("/")
         }).finally(() => closing.delete(key))
         if (draftID) removeDraftPersisted(draftID)
+      },
+      swapTabs: (first: Tab, second: Tab) => {
+        setStore((tabs) => swapTabOrder(tabs, first, second))
       },
       removeServer(key: ServerConnection.Key) {
         const drafts = store.flatMap((tab) => (tab.type === "draft" && tab.server === key ? [tab.draftID] : []))
